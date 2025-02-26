@@ -1,44 +1,24 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <unistd.h>
+#include "string_parsing.h"
 
 #define MAXSIZE 1024
 #define MAXARGS 50 
 
-void print_string_array(char *arr[]) {
-    int i = 0;
-    while (arr[i] != NULL) {  // Loop until we reach NULL
-        printf("Element [%d]: %s\n", i, arr[i]);
-        i++;
+
+
+int check_instruction(char **args) {
+    if (strcmp(args[0], "exit") == 0) {
+        return 0;  // Exit command
+    } 
+    else if (strcmp(args[0], "cd") == 0 || 
+             strcmp(args[0], "echo") == 0 || 
+             strcmp(args[0], "export") == 0) {
+        return 1;  // Built-in command
+    } 
+    else {
+        return 2;  //use execvp
+
     }
-}
-
-
-
-char **parse_input(char *input) {
-    int space_count = 0;
-    for (int i = 0; i < strlen(input); i++) {
-        if (input[i] == ' ') space_count++;
-    }
-
-    // Allocate memory for the array of pointers (args array)
-    char **args = (char **)malloc((space_count + 2) * sizeof(char *));
-    if (args == NULL) {
-        printf("Memory allocation failed\n");
-        exit(1);
-    }
-
-    int i = 0;
-    char *token = strtok(input, " ");
-    while (token != NULL) {
-        args[i] = strdup(token);  // Duplicate token (allocates memory)
-        token = strtok(NULL, " ");
-        i++;
-    }
-    args[i] = NULL;  // Null-terminate the array
-
-    return args;
 }
 
 void shell() {
@@ -57,7 +37,23 @@ void shell() {
 
         args = parse_input(input);
         print_string_array(args);
+        int instruction_type = check_instruction(args);
 
+        switch (instruction_type)
+        {
+        case 0:
+            exit(0);
+            break;
+        
+        case 1:
+            // built in commands;
+            break;
+        case 2:
+            // execute
+            break;
+        default:
+            printf("unknown command, try again");
+        
         execvp(args[0], args);
         // Free allocated memory
         
