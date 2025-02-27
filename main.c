@@ -1,69 +1,87 @@
-#include <stdio.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <fcntl.h>
+#include <signal.h>
+
 #include "string_parsing.h"
 
 #define MAXSIZE 1024
 
 int check_instruction(char **args) {
-    if (strcmp(args[0], "exit") == 0) {
-        return 0;  // Exit command
-    } 
-    else if (strcmp(args[0], "cd") == 0 || 
+    // returns the operation type 
+    if (strcmp(args[0], "exit") == 0){
+        return 0;
+    }else if (strcmp(args[0], "cd") == 0 || 
              strcmp(args[0], "echo") == 0 || 
-             strcmp(args[0], "export") == 0) {
-        return 1;  // Built-in command
-    } 
-    else {
-        return 2;  // Use execvp
-    }
+             strcmp(args[0], "export") == 0){
+        return 1;
+    }else{
+        return 2;
+    }    
     return 3;
 }
 
 void execute_external(char **args) {
+    int background = 0;
+    int i = 0;
+    
+    // extracts the & symbol
+    while (args[i] != NULL) i++;
+    if (i > 0 && strcmp(args[i - 1], "&") == 0) {
+        background = 1;
+        args[i - 1] = NULL; 
+    }
+
+    // execution
     int pid = fork();
     if (pid < 0) {
         printf("Error executing command\n");
     } else if (pid == 0) {
-        printf("Hello from child process (before execvp)\n");
         execvp(args[0], args);
-        perror("execvp failed");  // Print error if execvp fails
+        perror("execvp failed");
         exit(1);
-    } else {
-        printf("Hello from parent\n");
-        waitpid(pid, NULL, 0);  // Correct waitpid usage
+    } else if(!background){
+            waitpid(pid, NULL, 0);
     }
 }
 
 void execute_built_in(char **args) {
     if (strcmp(args[0], "cd") == 0) {
         if (args[1] == NULL) {
-            printf("cd: missing argument\n");
+            printf("Missing argument\n");
         } else {
             if (chdir(args[1]) != 0) {
                 perror("cd failed");
             }
         }
     } else if (strcmp(args[0], "echo") == 0) {
-        for (int i = 1; args[i] != NULL; i++) {
-            printf("%s ", args[i]);
-        }
-        printf("\n");
+        printf("\Echo not implemented \n");
     } else if (strcmp(args[0], "export") == 0) {
-        // Placeholder for future export functionality
         printf("export command not implemented yet\n");
     } else {
-        printf("Unknown built-in command\n");
+        printf("Unknown  command\n");
     }
 }
+
+void setup_env(){
+    chdir(getenv("HOME"));
+}
+
+void sigchld_handler(int sig) {
+    while (waitpid(-1, NULL, WNOHANG) > 0);
+    printf("Child process reaped\n");
+}
+
 
 void shell() {
     char input[MAXSIZE];
     char **args;
-    chdir(getenv("HOME"));
-    printf("WELCOME TO MY SHELL\n");
+    signal(SIGCHLD, sigchld_handler);
+    setup_env();
+    // test_child_processes();
 
+    printf("WELCOME TO MY SHELL\n");
     while (1) {
         printf("> ");  // Shell prompt
 
