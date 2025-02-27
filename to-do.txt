@@ -1,0 +1,5 @@
+1) external commands
+2) internal commands
+3) signaling and setup environment
+4) echo
+5) 
