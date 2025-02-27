@@ -1,2 +1,1 @@
-1) Lock when executing
-2) echo and export
+1) echo and export
