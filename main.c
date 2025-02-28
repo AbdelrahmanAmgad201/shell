@@ -8,7 +8,7 @@
 
 #define MAXSIZE 1024
 
-// Chain of responsibility -> tokenize -> extract variables -> execute command 
+// Chain of responsibility -> extract variables -> tokenize  -> check command type -> execute
 
 int check_instruction(char **args) {
     if (strcmp(args[0], "exit") == 0){
@@ -56,8 +56,11 @@ void execute_built_in(char **args) {
                 perror("cd failed");
             }
         }
-    } else if (strcmp(args[0], "echo") == 0) {
-        printf("%s\n", args[1]);
+    } else if (strcmp(args[0], "echo") == 0) { 
+        for(int i = 1;  args[i] != NULL ; i++){
+            printf("%s ", args[i]);
+        }
+        printf("\n");
     } else if (strcmp(args[0], "export") == 0) {
         if (args[1] == NULL) {
             printf("export: missing argument\n");
@@ -137,6 +140,109 @@ void extract_variables(char **args) {
         }
     }
 }
+// Function to expand environment variables within a string
+char* extract_variables_from_string(char *input) {
+    // Create a working buffer for the result, starting with enough space
+    int initial_size = strlen(input) * 2 + 1; // Double the size to allow for expansion
+    char *result = (char *)malloc(initial_size);
+    if (!result) {
+        printf("Memory allocation failed\n");
+        return NULL;
+    }
+    
+    int result_pos = 0;
+    int i = 0;
+    int max_size = initial_size;
+    int in_quotes = 0;
+    char quote_char = '\0';
+    
+    // Initialize the result buffer
+    result[0] = '\0';
+    
+    while (input[i] != '\0') {
+        // Handle quotes (to properly recognize $ inside quotes)
+        if ((input[i] == '"' || input[i] == '\'') && 
+            (i == 0 || input[i-1] != '\\')) {
+            if (!in_quotes) {
+                in_quotes = 1;
+                quote_char = input[i];
+            } else if (input[i] == quote_char) {
+                in_quotes = 0;
+            }
+            // Always include the quote character
+            result[result_pos++] = input[i];
+        }
+        // Handle environment variable expansion
+        else if (input[i] == '$' && (i == 0 || input[i-1] != '\\')) {
+            // Extract variable name
+            int j = i + 1;
+            int var_len = 0;
+            
+            // Identify variable name - allowing alphanumeric and underscore
+            while (isalnum(input[j]) || input[j] == '_') {
+                j++;
+                var_len++;
+            }
+            
+            // We found a variable name
+            if (var_len > 0) {
+                char var_name[var_len + 1];
+                strncpy(var_name, input + i + 1, var_len);
+                var_name[var_len] = '\0';
+                
+                // Get environment variable value
+                char *var_value = getenv(var_name);
+                
+                if (var_value) {
+                    int value_len = strlen(var_value);
+                    
+                    // Ensure we have enough space in our result buffer
+                    if (result_pos + value_len >= max_size) {
+                        max_size = max_size + value_len + initial_size;
+                        char *new_result = (char *)realloc(result, max_size);
+                        if (!new_result) {
+                            printf("Memory allocation failed during expansion\n");
+                            free(result);
+                            return NULL;
+                        }
+                        result = new_result;
+                    }
+                    
+                    // Copy the variable value into the result
+                    strcpy(result + result_pos, var_value);
+                    result_pos += value_len;
+                }
+                
+                // Skip past the variable name
+                i = j;
+                continue;
+            }
+        }
+        else {
+            // Regular character, just copy it
+            result[result_pos++] = input[i];
+        }
+        
+        // Check if we need more space
+        if (result_pos >= max_size - 1) {
+            max_size *= 2;
+            char *new_result = (char *)realloc(result, max_size);
+            if (!new_result) {
+                printf("Memory allocation failed\n");
+                free(result);
+                return NULL;
+            }
+            result = new_result;
+        }
+        
+        i++;
+    }
+    
+    // Null-terminate the result
+    result[result_pos] = '\0';
+    
+    return result;
+}
 void shell() {
     char input[MAXSIZE];
     char **args;
@@ -151,9 +257,20 @@ void shell() {
             continue;
         }
 
-        args = parse_input(input);
-        extract_variables(args);
+        // args = parse_input(input);
+        // extract_variables(args);
+        // print_string_array(args);
+
+        char *expanded_input = extract_variables_from_string(input);
+        if (!expanded_input) {
+            printf("Error expanding variables.\n");
+            continue;
+        }
+
+        // Now tokenize the expanded input
+        args = parse_input(expanded_input);
         print_string_array(args);
+
         int instruction_type = check_instruction(args);
 
         switch (instruction_type) {
