@@ -3,61 +3,178 @@
 #include <sys/wait.h>
 #include <fcntl.h>
 #include <signal.h>
-
-#include "string_parsing.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
 
 #define MAXSIZE 1024
+#define GREEN "\033[1;32m"
+#define BLUE  "\033[1;34m"
+#define RESET "\033[0m"
 
-// Chain of responsibility -> extract variables -> tokenize  -> check command type -> execute
+#define CMD_EXIT 0
+#define CMD_BUILTIN 1
+#define CMD_EXTERNAL 2
+#define CMD_UNKNOWN 3
+
+void print_prompt() {
+    char cwd[1024];
+    if (getcwd(cwd, sizeof(cwd)) != NULL) {
+        printf(GREEN "[my-shell] " RESET BLUE "%s" RESET " $ ", cwd);
+    } else {
+        perror("getcwd");
+    }
+}
+
+char **parse_input(char *input) {
+    char *input_copy = strdup(input);
+    if (input_copy == NULL) {
+        printf("Memory allocation failed\n");
+        exit(1);
+    }
+
+    int len = strlen(input_copy);
+    
+    int max_tokens = 0;
+    int i = 0;
+    int in_quotes = 0;
+    char quote_char = '\0';
+    
+    while (i < len) {
+        if ((input_copy[i] == '"' || input_copy[i] == '\'') && !in_quotes) {
+            in_quotes = 1;
+            quote_char = input_copy[i];
+        }
+        else if (in_quotes && input_copy[i] == quote_char) {
+            in_quotes = 0;
+        }
+        else if (!in_quotes && isspace((unsigned char)input_copy[i]) && 
+                 (i == 0 || !isspace((unsigned char)input_copy[i-1]))) {
+            max_tokens++;
+        }
+        
+        i++;
+    }
+    
+    max_tokens++;
+    
+    char **args = (char **)malloc((max_tokens + 1) * sizeof(char *));
+    if (args == NULL) {
+        free(input_copy);
+        printf("Memory allocation failed\n");
+        exit(1);
+    }
+    
+    int arg_index = 0;
+    char *buffer = (char *)malloc(len + 1);
+    if (buffer == NULL) {
+        free(input_copy);
+        free(args);
+        printf("Memory allocation failed\n");
+        exit(1);
+    }
+    
+    i = 0;
+    int buf_pos = 0;
+    in_quotes = 0;
+    quote_char = '\0';
+    
+    while (i <= len) {
+        if (i == len || (!in_quotes && isspace((unsigned char)input_copy[i]))) {
+            if (buf_pos > 0) {
+                buffer[buf_pos] = '\0';
+                args[arg_index++] = strdup(buffer);
+                buf_pos = 0;
+            }
+        }
+        else if (input_copy[i] == '"' || input_copy[i] == '\'') {
+            if (!in_quotes) {
+                in_quotes = 1;
+                quote_char = input_copy[i];
+            } 
+            else if (input_copy[i] == quote_char) {
+                in_quotes = 0;
+            }
+            else {
+                buffer[buf_pos++] = input_copy[i];
+            }
+        }
+        else {
+            buffer[buf_pos++] = input_copy[i];
+        }
+        
+        i++;
+    }
+    
+    args[arg_index] = NULL;
+    
+    free(buffer);
+    free(input_copy);
+    
+    return args;
+}
 
 int check_instruction(char **args) {
-    if (strcmp(args[0], "exit") == 0){
-        return 0;
-    }else if (strcmp(args[0], "cd") == 0 || 
-             strcmp(args[0], "echo") == 0 || 
-             strcmp(args[0], "export") == 0){
-        return 1;
-    }else{
-        return 2;
-    }    
-    return 3;
+    if (!args || !args[0]) {
+        return CMD_UNKNOWN;
+    }
+    
+    if (strcmp(args[0], "exit") == 0) {
+        return CMD_EXIT;
+    } 
+    
+    if (strcmp(args[0], "cd") == 0 || 
+        strcmp(args[0], "echo") == 0 || 
+        strcmp(args[0], "export") == 0) {
+        return CMD_BUILTIN;
+    }
+    
+    return CMD_EXTERNAL;
 }
 
 void execute_external(char **args) {
     int background = 0;
     int i = 0;
     
-    // extracts the & symbol
     while (args[i] != NULL) i++;
     if (i > 0 && strcmp(args[i - 1], "&") == 0) {
         background = 1;
         args[i - 1] = NULL; 
     }
 
-    // execution
-    int pid = fork();
+    pid_t pid = fork();
     if (pid < 0) {
         printf("Error executing command\n");
     } else if (pid == 0) {
+        // Child process
         execvp(args[0], args);
         perror("execvp failed");
         exit(1);
-    } else if(!background){
+    } else {
+        // Parent process
+        if (background) {
+            printf("[Background] Process ID: %d\n", pid);
+        } else {
             waitpid(pid, NULL, 0);
+        }
     }
 }
 
 void execute_built_in(char **args) {
-    if (strcmp(args[0], "cd") == 0) {
-        if (args[1] == NULL) {
-            printf("Missing argument\n");
+     if (strcmp(args[0], "cd") == 0) {
+        const char *home = getenv("HOME");
+        if (args[1] == NULL || strcmp(args[1], "~") == 0) {
+            chdir(home);
+        } else if (args[1][0] == '~') {
+            char path[1024];
+            snprintf(path, sizeof(path), "%s%s", home, args[1] + 1);
+            chdir(path);
         } else {
-            if (chdir(args[1]) != 0) {
-                perror("cd failed");
-            }
+            chdir(args[1]);
         }
-    } else if (strcmp(args[0], "echo") == 0) { 
-        for(int i = 1;  args[i] != NULL ; i++){
+    }else if (strcmp(args[0], "echo") == 0) { 
+        for (int i = 1; args[i] != NULL; i++) {
             printf("%s ", args[i]);
         }
         printf("\n");
@@ -67,7 +184,6 @@ void execute_built_in(char **args) {
             return;
         }
 
-        // Tokenize args[1] to get variable name and value
         char *var_name = strtok(args[1], "=");
         char *var_value = strtok(NULL, "=");
 
@@ -76,74 +192,37 @@ void execute_built_in(char **args) {
             return;
         }
 
-        // Store in the environment
         if (setenv(var_name, var_value, 1) != 0) {
             perror("export failed");
         }
     } else {
-        printf("Unknown  command\n");
+        printf("Unknown command\n");
     }
 }
 
-void setup_env(){
-    chdir(getenv("HOME"));
+void setup_env() {
+    // chdir(getenv("HOME"));
+    chdir("/");
     printf("WELCOME TO MY SHELL\n");
 }
 
 void sigchld_handler(int sig) {
     while (waitpid(-1, NULL, WNOHANG) > 0);
-    printf("Child process reaped\n");
 }
 
-void free_array(char **args){
+void free_array(char **args) {
+    if (!args) return;
+    
     for (int i = 0; args[i] != NULL; i++) {
         free(args[i]);
     }
     free(args);
 }
 
-void extract_variables(char **args) {
-    for (int i = 0; args[i] != NULL; i++) {
-        char *pos = strchr(args[i], '$'); // Find '$' in the argument
-        if (pos) {
-            // Extract variable name after '$'
-            char *var_name = pos + 1;  
-            char *var_value = getenv(var_name);  // Get environment variable value
-            
-            if (var_value) {
-                // Allocate space for the new argument with the variable replaced
-                int prefix_len = pos - args[i];  // Length of part before '$'
-                int new_size = prefix_len + strlen(var_value) + 1;
-                char *new_arg = (char *)malloc(new_size);
-                
-                if (new_arg) {
-                    strncpy(new_arg, args[i], prefix_len);  // Copy prefix
-                    new_arg[prefix_len] = '\0';  // Null-terminate
-                    strcat(new_arg, var_value);  // Append variable value
-                    
-                    free(args[i]); // Free old memory
-                    args[i] = new_arg;
-                }
-            } else {
-                // If variable is not found, remove only `$var` but keep the prefix
-                int prefix_len = pos - args[i]; 
-                char *new_arg = (char *)malloc(prefix_len + 1);
-                
-                if (new_arg) {
-                    strncpy(new_arg, args[i], prefix_len);
-                    new_arg[prefix_len] = '\0';
-                    
-                    free(args[i]);  // Free old memory
-                    args[i] = new_arg;
-                }
-            }
-        }
-    }
-}
-// Function to expand environment variables within a string
 char* extract_variables_from_string(char *input) {
-    // Create a working buffer for the result, starting with enough space
-    int initial_size = strlen(input) * 2 + 1; // Double the size to allow for expansion
+    if (!input) return NULL;
+    
+    int initial_size = strlen(input) * 2 + 1;
     char *result = (char *)malloc(initial_size);
     if (!result) {
         printf("Memory allocation failed\n");
@@ -156,11 +235,9 @@ char* extract_variables_from_string(char *input) {
     int in_quotes = 0;
     char quote_char = '\0';
     
-    // Initialize the result buffer
     result[0] = '\0';
     
     while (input[i] != '\0') {
-        // Handle quotes (to properly recognize $ inside quotes)
         if ((input[i] == '"' || input[i] == '\'') && 
             (i == 0 || input[i-1] != '\\')) {
             if (!in_quotes) {
@@ -169,34 +246,27 @@ char* extract_variables_from_string(char *input) {
             } else if (input[i] == quote_char) {
                 in_quotes = 0;
             }
-            // Always include the quote character
             result[result_pos++] = input[i];
         }
-        // Handle environment variable expansion
         else if (input[i] == '$' && (i == 0 || input[i-1] != '\\')) {
-            // Extract variable name
             int j = i + 1;
             int var_len = 0;
             
-            // Identify variable name - allowing alphanumeric and underscore
             while (isalnum(input[j]) || input[j] == '_') {
                 j++;
                 var_len++;
             }
             
-            // We found a variable name
             if (var_len > 0) {
                 char var_name[var_len + 1];
                 strncpy(var_name, input + i + 1, var_len);
                 var_name[var_len] = '\0';
                 
-                // Get environment variable value
                 char *var_value = getenv(var_name);
                 
                 if (var_value) {
                     int value_len = strlen(var_value);
                     
-                    // Ensure we have enough space in our result buffer
                     if (result_pos + value_len >= max_size) {
                         max_size = max_size + value_len + initial_size;
                         char *new_result = (char *)realloc(result, max_size);
@@ -208,22 +278,18 @@ char* extract_variables_from_string(char *input) {
                         result = new_result;
                     }
                     
-                    // Copy the variable value into the result
                     strcpy(result + result_pos, var_value);
                     result_pos += value_len;
                 }
                 
-                // Skip past the variable name
                 i = j;
                 continue;
             }
         }
         else {
-            // Regular character, just copy it
             result[result_pos++] = input[i];
         }
         
-        // Check if we need more space
         if (result_pos >= max_size - 1) {
             max_size *= 2;
             char *new_result = (char *)realloc(result, max_size);
@@ -238,28 +304,29 @@ char* extract_variables_from_string(char *input) {
         i++;
     }
     
-    // Null-terminate the result
     result[result_pos] = '\0';
-    
     return result;
 }
+
 void shell() {
     char input[MAXSIZE];
     char **args;
+    
     signal(SIGCHLD, sigchld_handler);
     setup_env();
-    setenv("x", "l", 1);
+    
     while (1) {
-        printf("> ");  // Shell prompt
+        print_prompt();
 
         if (scanf(" %[^\n]%*c", input) != 1) {
-            printf("Error reading input.\n");
+            if (feof(stdin)) {
+                printf("\nExiting shell...\n");
+                break;
+            }
+            clearerr(stdin);
+            getchar();
             continue;
         }
-
-        // args = parse_input(input);
-        // extract_variables(args);
-        // print_string_array(args);
 
         char *expanded_input = extract_variables_from_string(input);
         if (!expanded_input) {
@@ -267,27 +334,32 @@ void shell() {
             continue;
         }
 
-        // Now tokenize the expanded input
         args = parse_input(expanded_input);
-        print_string_array(args);
+        free(expanded_input);
+        
+        if (!args || !args[0]) {
+            free_array(args);
+            continue;
+        }
 
         int instruction_type = check_instruction(args);
 
         switch (instruction_type) {
-            case 0:
+            case CMD_EXIT:
+                free_array(args);
                 exit(0);
                 break;
-            case 1:
+            case CMD_BUILTIN:
                 execute_built_in(args);
                 break;
-            case 2:
+            case CMD_EXTERNAL:
                 execute_external(args);
                 break;
             default:
                 printf("Unknown command\n");
         }
-        free_array(args);
         
+        free_array(args);
     }
 }
 
